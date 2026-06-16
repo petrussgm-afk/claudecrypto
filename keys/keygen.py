@@ -3,13 +3,14 @@ FSC — Key Generator
 Generuje kompletný kľúč pre daný text.
 
 Každý znak dostane vlastné seedy pre každú vrstvu.
-Master seed → deterministická derivácia všetkých pod-seedov.
+Master key (256-bit) → SHAKE256 derivácia všetkých pod-seedov.
 """
 
-import numpy as np
+import hashlib
+import secrets
 import time
-from dataclasses import dataclass, asdict
-from typing import Optional
+from dataclasses import dataclass
+from typing import Optional, Union
 
 
 @dataclass
@@ -27,46 +28,71 @@ class FSCKey:
     canvas_size: int
     planck_resolution: int
     lorenz_init: list       # [x0, y0, z0] pre blackhole vrstvu
-    master_seed: int
+    master_key: bytes       # 32 bytes (256-bit)
     t_encrypt: float        # unix timestamp
     chars: list             # list of CharKey
+
+    @property
+    def key_hex(self) -> str:
+        return self.master_key.hex()
+
+    @property
+    def master_seed(self) -> int:
+        """Backward compat — first 4 bytes of master_key as int."""
+        return int.from_bytes(self.master_key[:4], 'big')
+
+
+def _derive_seed(master_key: bytes, purpose: str, index: int) -> int:
+    h = hashlib.shake_256(master_key + purpose.encode() + index.to_bytes(4, 'big'))
+    return int.from_bytes(h.digest(4), 'big')
 
 
 def generate(
     text: str,
-    master_seed: Optional[int] = None,
+    master_key: Optional[Union[bytes, int]] = None,
     canvas_size: int = 128,
     planck_resolution: int = 256,
+    master_seed: Optional[int] = None,  # deprecated alias, kept for backward compat
 ) -> FSCKey:
     """
     Vygeneruje úplný kľúč pre dané vstupné slovo.
 
-    master_seed → numpy RNG → deterministické seedy pre každý znak a vrstvu.
-    Ak master_seed nie je zadaný, použije sa náhodný.
+    master_key: 32 raw bytes, int (converted to 4-byte padded key), or None → secrets.token_bytes(32).
     """
-    if master_seed is None:
-        master_seed = int(np.random.default_rng().integers(0, 2**32))
+    # backward compat: master_seed kwarg maps to master_key
+    if master_key is None and master_seed is not None:
+        master_key = master_seed
 
-    rng = np.random.default_rng(master_seed)
+    if master_key is None:
+        master_key = secrets.token_bytes(32)
+    elif isinstance(master_key, int):
+        master_key = master_key.to_bytes(4, 'big').ljust(32, b'\x00')
 
-    chars = []
-    for char in text:
-        chars.append(CharKey(
+    chars = [
+        CharKey(
             char=char,
-            renderer_seed=int(rng.integers(0, 2**32)),
-            material_seed=int(rng.integers(0, 2**32)),
-            isotope_seed=int(rng.integers(0, 2**32)),
-            fractal_seed=int(rng.integers(0, 2**32)),
-        ))
+            renderer_seed=_derive_seed(master_key, 'renderer', i),
+            material_seed=_derive_seed(master_key, 'material', i),
+            isotope_seed=_derive_seed(master_key, 'isotope', i),
+            fractal_seed=_derive_seed(master_key, 'fractal', i),
+        )
+        for i, char in enumerate(text)
+    ]
 
-    lorenz_init = rng.uniform(-0.5, 0.5, size=3).tolist()
+    # Derive lorenz_init via SHAKE256 using integer scaling to avoid subnormal floats
+    h = hashlib.shake_256(master_key + b'lorenz')
+    raw = h.digest(24)
+    x = int.from_bytes(raw[0:8],  'big') / 2**64 * 40.0 - 20.0   # [-20, 20]
+    y = int.from_bytes(raw[8:16], 'big') / 2**64 * 40.0 - 20.0   # [-20, 20]
+    z = int.from_bytes(raw[16:24],'big') / 2**64 * 50.0           # [0, 50]
+    lorenz_init = [x, y, z]
 
     return FSCKey(
         text=text,
         canvas_size=canvas_size,
         planck_resolution=planck_resolution,
         lorenz_init=lorenz_init,
-        master_seed=master_seed,
+        master_key=master_key,
         t_encrypt=time.time(),
         chars=chars,
     )

@@ -9,16 +9,18 @@ Lorenzov atraktor:
     sigma=10, rho=28, beta=8/3
 
 Keystream: trajektória ODE integrovaná RK4 → x-zložka → bajty.
-Šifrovanie: ciphertext = data XOR keystream(lorenz_init)
-Dešifrovanie: data = ciphertext XOR keystream(lorenz_init)   [XOR je samoinverzná]
+Šifrovanie: ciphertext = data XOR keystream(lorenz_init, nonce)
+Dešifrovanie: data = ciphertext XOR keystream(lorenz_init, nonce)   [XOR je samoinverzná]
 
-Bezpečnostná vlastnosť: Lorenzov systém je chaotický —
-minimálna zmena lorenz_init (napr. 1e-10) po ~50 krokoch
-produkuje úplne odlišný keystream (butterfly effect).
+Bezpečnostná vlastnosť: nonce zmiešaný s lorenz_init cez SHAKE256 zaručuje,
+že rovnaký lorenz_init s odlišným nonce produkuje úplne odlišný keystream.
 """
 
+import hashlib
+import secrets
+import struct
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 SIGMA = 10.0
 RHO   = 28.0
@@ -31,6 +33,19 @@ N_WARMUP = 1000       # kroky pred odberom — usadenie na attraktore
 class BlackholeParams:
     lorenz_init: list  # [x0, y0, z0]
     dt: float = DT
+    nonce: bytes = field(default_factory=lambda: secrets.token_bytes(16))
+
+
+def _derive_lorenz_init(params: BlackholeParams) -> tuple:
+    """Mix lorenz_init with nonce via SHAKE256 → unique effective initial condition."""
+    lorenz_bytes = struct.pack('<3d', *params.lorenz_init)
+    h = hashlib.shake_256(lorenz_bytes + params.nonce)
+    raw = h.digest(24)
+    # Integer scaling avoids subnormal floats (which can land on ODE fixed points)
+    x = int.from_bytes(raw[0:8],  'big') / 2**64 * 40.0 - 20.0   # [-20, 20]
+    y = int.from_bytes(raw[8:16], 'big') / 2**64 * 40.0 - 20.0   # [-20, 20]
+    z = int.from_bytes(raw[16:24],'big') / 2**64 * 50.0           # [0, 50]
+    return (x, y, z)
 
 
 def _rk4_step(x: float, y: float, z: float, dt: float):
@@ -64,49 +79,45 @@ def _generate_keystream(params: BlackholeParams, n: int) -> np.ndarray:
     """
     Generuje n bajtov keystreamu z Lorenzovej trajektórie.
 
-    Konverzia x → bajt:
-      Berieme 3 mantisové bajty z IEEE-754 double (bajty 3,4,5 z 8)
-      a XOR-ujeme ich → rovnomerné rozloženie bitov naprieč celým atraktorem.
+    Efektívny počiatočný stav = SHAKE256(lorenz_init_bytes || nonce),
+    čím sa zaručuje unikátnosť keystreamu pre každú správu.
     """
-    x, y, z = [float(v) for v in params.lorenz_init]
+    x, y, z = _derive_lorenz_init(params)
 
-    # warm-up — presunutie na atraktor, preč od počiatočného prechodového javu
+    # warm-up — presunutie na atraktor
     for _ in range(N_WARMUP):
         x, y, z = _rk4_step(x, y, z, params.dt)
 
-    # zber n x-hodnôt
     xs = np.empty(n, dtype=np.float64)
     for i in range(n):
         x, y, z = _rk4_step(x, y, z, params.dt)
         xs[i] = x
 
     # konverzia na bajty: IEEE-754 mantisa (bajty 3–5) XOR-ovaná → 1 bajt na pixel
-    raw = xs.view(np.uint8).reshape(n, 8)       # každý double = 8 bajtov
-    keystream = raw[:, 3] ^ raw[:, 4] ^ raw[:, 5]  # mantisové bity
-    return keystream                              # dtype=uint8, shape=(n,)
+    raw = xs.view(np.uint8).reshape(n, 8)
+    keystream = raw[:, 3] ^ raw[:, 4] ^ raw[:, 5]
+    return keystream  # dtype=uint8, shape=(n,)
 
 
 def encrypt(quantized: np.ndarray, params: BlackholeParams) -> dict:
     """
     Vstup:  quantized — uint16 array (n_chars, H, W), hodnoty 0–255
-    Výstup: dict s XOR-šifrovaným uint8 array a pôvodným tvarom
-
-    Lorenzov keystream je generovaný z params.lorenz_init.
-    Bez presného lorenz_init je reverzia kryptograficky nemožná.
+    Výstup: dict s XOR-šifrovaným uint8 array, params (vrátane nonce) a pôvodným tvarom
     """
     flat   = quantized.ravel().astype(np.uint8)
     stream = _generate_keystream(params, len(flat))
     cipher = (flat ^ stream).astype(np.uint8)
     return {
-        "cipher":       cipher.reshape(quantized.shape),
-        "params":       params,
+        "cipher":         cipher.reshape(quantized.shape),
+        "params":         params,
+        "nonce":          params.nonce,
         "original_shape": quantized.shape,
     }
 
 
 def decrypt(blackhole_output: dict) -> np.ndarray:
     """
-    Reverzia Lorenzovej vrstvy — XOR so zhodným keystreamom.
+    Reverzia Lorenzovej vrstvy — XOR so zhodným keystreamom (vrátane nonce).
     Vracia uint16 array kompatibilný so vstupom quantizer.decrypt().
     """
     params = blackhole_output["params"]

@@ -7,12 +7,63 @@ Orchestrácia celého šifrovacieho toku (6 vrstiev):
     renderer ← material ← isotope ← fractal ← quantizer ← blackhole  (decrypt)
 """
 
+import hashlib
+import hmac
+import secrets
+import struct
 import time
 import numpy as np
 
 from core import renderer, material, isotope, fractal, quantizer, blackhole
 from core.blackhole import BlackholeParams
 from keys.keygen import FSCKey
+
+# ── Authentication + padding ──────────────────────────────────────────────────
+
+BLOCK = 256  # pad ciphertext to next multiple of this many bytes
+
+
+def _hmac_key(master_key: bytes) -> bytes:
+    return hashlib.shake_256(master_key + b'hmac').digest(32)
+
+
+def _add_hmac(data: bytes, key: bytes) -> bytes:
+    mac = hmac.new(key, data, hashlib.sha256).digest()
+    return mac + data
+
+
+def _verify_hmac(data: bytes, key: bytes) -> bytes:
+    mac, payload = data[:32], data[32:]
+    expected = hmac.new(key, payload, hashlib.sha256).digest()
+    if not hmac.compare_digest(mac, expected):
+        raise ValueError("HMAC verification failed — ciphertext tampered or wrong key")
+    return payload
+
+
+def _seal_cipher(cipher: np.ndarray, master_key: bytes) -> bytes:
+    """Serialize cipher array → length-hidden, HMAC-authenticated bytes."""
+    raw = cipher.ravel().tobytes()
+    original_size = len(raw)
+    # header: original_size (4 bytes) + shape n_chars,H,W (3×4 bytes) = 16 bytes
+    header = struct.pack('>I3I', original_size, *cipher.shape)
+    mask = hashlib.shake_256(master_key + b'header').digest(len(header))
+    enc_header = bytes(a ^ b for a, b in zip(header, mask))
+    payload = enc_header + raw
+    rem = len(payload) % BLOCK
+    if rem:
+        payload += secrets.token_bytes(BLOCK - rem)
+    return _add_hmac(payload, _hmac_key(master_key))
+
+
+def _unseal_cipher(ct_bytes: bytes, master_key: bytes) -> np.ndarray:
+    """Verify HMAC, strip padding, reconstruct cipher array."""
+    payload = _verify_hmac(ct_bytes, _hmac_key(master_key))
+    header_size = 16
+    mask = hashlib.shake_256(master_key + b'header').digest(header_size)
+    header_dec = bytes(a ^ b for a, b in zip(payload[:header_size], mask))
+    original_size, n_chars, H, W = struct.unpack('>I3I', header_dec)
+    raw = payload[header_size:header_size + original_size]
+    return np.frombuffer(raw, dtype=np.uint8).reshape(n_chars, H, W)
 
 
 # ── Encrypt ──────────────────────────────────────────────────────────────────
@@ -58,6 +109,9 @@ def encrypt(text: str, key: FSCKey) -> dict:
     bh_params = BlackholeParams(lorenz_init=key.lorenz_init)
     bh_out    = blackhole.encrypt(quant_out["quantized"], bh_params)
 
+    # ── Authentication + padding ──────────────────────────────────────────
+    auth_cipher = _seal_cipher(bh_out["cipher"], key.master_key)
+
     return {
         "geometry":        geometry,
         "material_out":    material_out,
@@ -65,6 +119,7 @@ def encrypt(text: str, key: FSCKey) -> dict:
         "fractal_out":     fractal_out,
         "quant_out":       quant_out,
         "bh_out":          bh_out,
+        "auth_cipher":     auth_cipher,
         "renderer_params": renderer_params,
         "material_params": material_params,
         "isotope_params":  isotope_params,
@@ -81,6 +136,10 @@ def encrypt(text: str, key: FSCKey) -> dict:
 def decrypt(enc_state: dict, t_decrypt: float = None) -> dict:
     """Úplné dešifrovanie — reverzia 6 vrstiev v opačnom poradí."""
     t = t_decrypt if t_decrypt is not None else time.time()
+
+    # ── HMAC verification (fail fast before any decryption) ───────────────
+    if "auth_cipher" in enc_state:
+        _verify_hmac(enc_state["auth_cipher"], _hmac_key(enc_state["key"].master_key))
 
     # ── Reverzia 6: Blackhole ─────────────────────────────────────────────
     after_bh = blackhole.decrypt(enc_state["bh_out"])

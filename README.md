@@ -64,8 +64,8 @@ Each column is one character. Left to right: the pixel structure of the rendered
 ## Installation
 
 ```bash
-git clone https://github.com/your-username/fsc-cipher.git
-cd fsc-cipher
+git clone https://github.com/petrussgm-afk/claudecrypto.git
+cd claudecrypto
 pip install -r requirements.txt
 ```
 
