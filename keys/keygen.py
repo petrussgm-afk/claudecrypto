@@ -31,6 +31,7 @@ class FSCKey:
     master_key: bytes       # 32 bytes (256-bit)
     t_encrypt: float        # unix timestamp
     chars: list             # list of CharKey
+    otp_pad: bytes          # Layer 7 — One-Time Pad (n_chars × canvas² bytes)
 
     @property
     def key_hex(self) -> str:
@@ -40,6 +41,10 @@ class FSCKey:
     def master_seed(self) -> int:
         """Backward compat — first 4 bytes of master_key as int."""
         return int.from_bytes(self.master_key[:4], 'big')
+
+    @property
+    def otp_pad_kb(self) -> float:
+        return len(self.otp_pad) / 1024
 
 
 def _derive_seed(master_key: bytes, purpose: str, index: int) -> int:
@@ -87,6 +92,8 @@ def generate(
     z = int.from_bytes(raw[16:24],'big') / 2**64 * 50.0           # [0, 50]
     lorenz_init = [x, y, z]
 
+    otp_pad = secrets.token_bytes(len(text) * canvas_size * canvas_size)
+
     return FSCKey(
         text=text,
         canvas_size=canvas_size,
@@ -95,4 +102,5 @@ def generate(
         master_key=master_key,
         t_encrypt=time.time(),
         chars=chars,
+        otp_pad=otp_pad,
     )

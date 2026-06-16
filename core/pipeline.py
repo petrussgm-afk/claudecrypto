@@ -1,10 +1,10 @@
 """
 FSC — Pipeline
-Orchestrácia celého šifrovacieho toku (6 vrstiev):
+Orchestrácia celého šifrovacieho toku (7 vrstiev):
 
-    renderer → material → isotope → fractal → quantizer → blackhole
-                                                               ↓
-    renderer ← material ← isotope ← fractal ← quantizer ← blackhole  (decrypt)
+    renderer → material → isotope → fractal → quantizer → blackhole → otp
+                                                                         ↓
+    renderer ← material ← isotope ← fractal ← quantizer ← blackhole ← otp  (decrypt)
 """
 
 import hashlib
@@ -14,7 +14,7 @@ import struct
 import time
 import numpy as np
 
-from core import renderer, material, isotope, fractal, quantizer, blackhole
+from core import renderer, material, isotope, fractal, quantizer, blackhole, otp
 from core.blackhole import BlackholeParams
 from keys.keygen import FSCKey
 
@@ -69,7 +69,7 @@ def _unseal_cipher(ct_bytes: bytes, master_key: bytes) -> np.ndarray:
 # ── Encrypt ──────────────────────────────────────────────────────────────────
 
 def encrypt(text: str, key: FSCKey) -> dict:
-    """Úplné šifrovanie textu cez všetkých 6 vrstiev."""
+    """Úplné šifrovanie textu cez všetkých 7 vrstiev."""
     assert len(text) == len(key.chars), "Text sa nezhoduje s kľúčom"
     n  = len(text)
     cs = key.canvas_size
@@ -109,8 +109,11 @@ def encrypt(text: str, key: FSCKey) -> dict:
     bh_params = BlackholeParams(lorenz_init=key.lorenz_init)
     bh_out    = blackhole.encrypt(quant_out["quantized"], bh_params)
 
-    # ── Authentication + padding ──────────────────────────────────────────
-    auth_cipher = _seal_cipher(bh_out["cipher"], key.master_key)
+    # ── Vrstva 7: OTP ────────────────────────────────────────────────────
+    otp_out = otp.encrypt(bh_out["cipher"], key.otp_pad)
+
+    # ── Authentication + padding (over final OTP ciphertext) ──────────────
+    auth_cipher = _seal_cipher(otp_out, key.master_key)
 
     return {
         "geometry":        geometry,
@@ -119,6 +122,7 @@ def encrypt(text: str, key: FSCKey) -> dict:
         "fractal_out":     fractal_out,
         "quant_out":       quant_out,
         "bh_out":          bh_out,
+        "otp_out":         otp_out,
         "auth_cipher":     auth_cipher,
         "renderer_params": renderer_params,
         "material_params": material_params,
@@ -134,15 +138,19 @@ def encrypt(text: str, key: FSCKey) -> dict:
 # ── Decrypt ───────────────────────────────────────────────────────────────────
 
 def decrypt(enc_state: dict, t_decrypt: float = None) -> dict:
-    """Úplné dešifrovanie — reverzia 6 vrstiev v opačnom poradí."""
+    """Úplné dešifrovanie — reverzia 7 vrstiev v opačnom poradí."""
     t = t_decrypt if t_decrypt is not None else time.time()
 
     # ── HMAC verification (fail fast before any decryption) ───────────────
     if "auth_cipher" in enc_state:
         _verify_hmac(enc_state["auth_cipher"], _hmac_key(enc_state["key"].master_key))
 
+    # ── Reverzia 7: OTP ───────────────────────────────────────────────────
+    after_otp = otp.decrypt(enc_state["otp_out"], enc_state["key"].otp_pad)
+
     # ── Reverzia 6: Blackhole ─────────────────────────────────────────────
-    after_bh = blackhole.decrypt(enc_state["bh_out"])
+    bh_for_decrypt = {**enc_state["bh_out"], "cipher": after_otp.astype(np.uint8)}
+    after_bh = blackhole.decrypt(bh_for_decrypt)
 
     # ── Reverzia 5: Quantizer ─────────────────────────────────────────────
     after_quant = quantizer.decrypt({
@@ -177,6 +185,7 @@ def decrypt(enc_state: dict, t_decrypt: float = None) -> dict:
     })
 
     return {
+        "after_otp":      after_otp,
         "after_bh":       after_bh,
         "after_quant":    after_quant,
         "after_fractal":  after_fractal,
@@ -192,7 +201,8 @@ def roundtrip_error(enc_state: dict, dec_state: dict) -> dict:
     """
     Každá decryptovaná vrstva vs. jej správna referencia z encryption state.
 
-      after_bh       == quant_out["quantized"]          (presné — XOR)
+      after_otp      == bh_out["cipher"]                (presné — OTP XOR)
+      after_bh       == quant_out["quantized"]          (presné — Lorenz XOR)
       after_quant    ≈  fractal_out["transformed"]      (kvantz. chyba ≤ step/2)
       after_fractal  ≈  isotope_out["decayed"]          (presné — permutácia)
       after_isotope  ≈  material_out["attenuated"]      (amplifikovaná kvantz. ch.)
@@ -200,6 +210,7 @@ def roundtrip_error(enc_state: dict, dec_state: dict) -> dict:
       geometry_final ≈  geometry                         (plný round-trip)
     """
     refs = {
+        "after_otp":      enc_state["bh_out"]["cipher"].astype(np.uint8),
         "after_bh":       enc_state["quant_out"]["quantized"].astype(np.uint16),
         "after_quant":    enc_state["fractal_out"]["transformed"],
         "after_fractal":  enc_state["isotope_out"]["decayed"],
@@ -208,6 +219,7 @@ def roundtrip_error(enc_state: dict, dec_state: dict) -> dict:
         "geometry_final": enc_state["geometry"],
     }
     vals = {
+        "after_otp":      dec_state["after_otp"].astype(np.uint8),
         "after_bh":       dec_state["after_bh"].astype(np.uint16),
         "after_quant":    dec_state["after_quant"],
         "after_fractal":  dec_state["after_fractal"],

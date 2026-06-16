@@ -1,13 +1,14 @@
 """
-FSC — 6-layer pipeline round-trip test + security checks
+FSC — 7-layer pipeline round-trip test + security checks
 
-renderer -> material -> isotope -> fractal -> quantizer -> blackhole
-blackhole -> quantizer -> fractal -> isotope -> material -> renderer
+renderer → material → isotope → fractal → quantizer → blackhole → otp
+otp → blackhole → quantizer → fractal → isotope → material → renderer
 
 Security tests:
   - 256-bit master_key via secrets.token_bytes(32)
   - HMAC-SHA256 tamper detection
   - Nonce-gated Lorenz keystream
+  - OTP wrong-pad detection
 """
 import sys, time
 import numpy as np
@@ -16,16 +17,18 @@ sys.path.insert(0, '.')
 from keys.keygen import generate
 from core.pipeline import encrypt, decrypt, roundtrip_error, _verify_hmac, _hmac_key, BLOCK
 from core.blackhole import BlackholeParams, _generate_keystream
+from core import otp
 
 TEXT = "FSC"
-key  = generate(TEXT)   # random 256-bit master_key
+key  = generate(TEXT)   # random 256-bit master_key + random OTP pad
 
 sep = "-" * 66
 print(sep)
-print(f" FSC 6-layer pipeline test   text={TEXT!r}")
+print(f" FSC 7-layer pipeline test   text={TEXT!r}")
 print(f" master_key = {key.key_hex}  ({len(key.master_key)*8} bit)")
 print(sep)
 print(f" canvas={key.canvas_size}x{key.canvas_size}  planck={key.planck_resolution}  lorenz_init={[round(v,4) for v in key.lorenz_init]}")
+print(f" OTP pad:   {key.otp_pad_kb:.2f} kB  ({len(key.otp_pad)*8} bits)")
 print(f" Key space: 2^256 ≈ {2**256:.2e} possible keys")
 print()
 
@@ -51,6 +54,7 @@ rows = [
     ("fractal",   enc["fractal_out"]["transformed"],        "float32"),
     ("quantizer", enc["quant_out"]["quantized"],            "uint16 "),
     ("blackhole", bh["cipher"],                             "uint8  "),
+    ("otp",       enc["otp_out"],                           "uint8  "),
 ]
 for name, arr, dtype in rows:
     print(f"  {name:<12}  {str(arr.shape):<16}  {dtype:<8}"
@@ -94,18 +98,28 @@ print(f"  Butterfly effect: init perturbed by 1e-10 (same nonce)")
 print(f"  Keystream divergence after {total_steps} steps: {diff_bytes}/3000 bytes differ ({diff_bytes/30:.1f}%)")
 print()
 
+# ── OTP wrong-pad detection ───────────────────────────────────────────────
+wrong_pad = bytes([key.otp_pad[0] ^ 0xFF]) + key.otp_pad[1:]
+correct_after_otp = otp.decrypt(enc["otp_out"], key.otp_pad)
+wrong_after_otp   = otp.decrypt(enc["otp_out"], wrong_pad)
+otp_flip_detected = not np.array_equal(correct_after_otp, wrong_after_otp)
+otp_exact = np.array_equal(correct_after_otp, bh["cipher"])
+
+print(f"  OTP correct pad → matches bh_out cipher: {'PASS' if otp_exact else 'FAIL'}")
+print(f"  OTP wrong pad   → output differs:        {'PASS (detected)' if otp_flip_detected else 'FAIL'}")
+print(f"  OTP pad size:   {key.otp_pad_kb:.2f} kB  ({len(key.otp_pad) * 8:,} bits)")
+print()
+
 # ── HMAC tamper detection ─────────────────────────────────────────────────
 auth_cipher = enc["auth_cipher"]
 hk = _hmac_key(key.master_key)
 
-# correct key → no exception
 try:
     _verify_hmac(auth_cipher, hk)
     hmac_ok = True
 except ValueError:
     hmac_ok = False
 
-# flip one bit in master_key → wrong HMAC key → ValueError expected
 bad_master = bytes([key.master_key[0] ^ 0x01]) + key.master_key[1:]
 bad_hk = _hmac_key(bad_master)
 try:
@@ -114,7 +128,6 @@ try:
 except ValueError:
     tamper_detected = True
 
-# flip one byte in ciphertext payload → tampered data → ValueError expected
 tampered_ct = auth_cipher[:33] + bytes([auth_cipher[33] ^ 0xFF]) + auth_cipher[34:]
 try:
     _verify_hmac(tampered_ct, hk)
@@ -144,19 +157,19 @@ print(f"  {'layer':<18}  {'max err':>10}  {'mean err':>10}  {'note'}")
 print("  " + "-" * 58)
 
 notes = {
-    "after_bh":       "exact — XOR self-inverse",
+    "after_otp":      "exact — OTP XOR self-inverse",
+    "after_bh":       "exact — Lorenz XOR self-inverse",
     "after_quant":    "<=step/2 — quantizer bound",
     "after_fractal":  "exact — permutation",
     "after_isotope":  "amplified by 1/n0",
     "after_material": "amplified by 1/atten (key-dependent)",
     "geometry_final": "full round-trip",
 }
-# Algorithmic layers always pass; physical layers depend on material attenuation
-ALGO_LAYERS = {"after_bh", "after_quant", "after_fractal"}
+ALGO_LAYERS = {"after_otp", "after_bh", "after_quant", "after_fractal"}
 ok_algo = True
 ok_phys = True
 for name, e in errs.items():
-    is_exact = "bh" in name
+    is_exact = name in ("after_otp", "after_bh")
     ok = (e["max"] < 1e-9) if is_exact else (e["max"] / (qp.vmax - qp.vmin) < 0.01)
     if name in ALGO_LAYERS:
         ok_algo = ok_algo and ok
@@ -166,25 +179,31 @@ for name, e in errs.items():
     print(f"  {name:<18}  {e['max']:>10.4e}  {e['mean']:>10.4e}  {flag}  {notes[name]}")
 
 print()
-fractal_adds_no_error = abs(errs["after_fractal"]["max"] - errs["after_quant"]["max"]) < 1e-9
-print(f"  Blackhole XOR exact:              {errs['after_bh']['max'] == 0.0}")
-print(f"  Fractal adds no error (permut.):  {fractal_adds_no_error}")
+otp_exact_rt  = errs["after_otp"]["max"] == 0.0
+bh_exact_rt   = errs["after_bh"]["max"]  == 0.0
+fractal_clean = abs(errs["after_fractal"]["max"] - errs["after_quant"]["max"]) < 1e-9
+print(f"  OTP XOR exact:                    {otp_exact_rt}")
+print(f"  Blackhole XOR exact:              {bh_exact_rt}")
+print(f"  Fractal adds no error (permut.):  {fractal_clean}")
 print(f"  Physical fidelity (this key):     {'OK' if ok_phys else 'WARN (high-atten material)'}")
 print()
 
 # ── Ciphertext stats ──────────────────────────────────────────────────────
-cipher = bh["cipher"]
-counts = np.bincount(cipher.ravel(), minlength=256)
-probs = counts[counts > 0] / cipher.size
+cipher_otp = enc["otp_out"]
+counts = np.bincount(cipher_otp.ravel(), minlength=256)
+probs = counts[counts > 0] / cipher_otp.size
 entropy = -np.dot(probs, np.log2(probs))
-print(f"  Ciphertext: {cipher.size} bytes  ({cipher.size/1024:.1f} kB)")
+print(f"  Final ciphertext (OTP out): {cipher_otp.size} bytes  ({cipher_otp.size/1024:.1f} kB)")
 print(f"  Byte entropy: {entropy:.3f} / 8.000 bits  (ideal=8.000)")
 print()
 
 # ── Security summary ──────────────────────────────────────────────────────
-security_ok = hmac_ok and tamper_detected and data_tamper_detected
+security_ok = hmac_ok and tamper_detected and data_tamper_detected and otp_exact and otp_flip_detected
 print(f"  ALGORITHMIC LAYERS: {'PASS' if ok_algo else 'FAIL'}")
 print(f"  PHYSICAL FIDELITY:  {'PASS' if ok_phys else 'WARN (high-atten material — expected)'}")
 print(f"  SECURITY CHECKS:    {'PASS' if security_ok else 'FAIL'}")
 print(f"  key_hex length:     {len(key.key_hex)} chars ({len(key.key_hex)*4} bit)")
+print()
+print(f"  Layer 6 (Lorenz XOR):  computational security  — 2^256 key space")
+print(f"  Layer 7 (OTP):         information-theoretic   — Shannon perfect secrecy")
 print(sep)
