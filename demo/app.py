@@ -54,7 +54,7 @@ def _hex_dump(data: np.ndarray, n: int = 256, cols: int = 16) -> str:
 
 
 def _run_encrypt(text: str, seed: int, canvas: int, planck: int) -> dict:
-    key = generate(text, master_seed=seed, canvas_size=canvas, planck_resolution=planck)
+    key = generate(text, master_key=seed.to_bytes(32, 'big'), canvas_size=canvas, planck_resolution=planck)
     t0  = time.perf_counter()
     enc = encrypt(text, key)
     enc["_t_ms"] = (time.perf_counter() - t0) * 1000
@@ -79,7 +79,7 @@ with st.sidebar:
 
     st.divider()
     st.caption("""
-**6 encryption layers**
+**7 encryption layers**
 
 `1` Renderer — vector geometry
 `2` Material — Beer-Lambert X-ray
@@ -87,14 +87,15 @@ with st.sidebar:
 `4` Fractal — IFS φ-permutation
 `5` Quantizer — Planck discretize
 `6` Blackhole — Lorenz XOR
+`7` OTP — perfect secrecy
 """)
 
 
 # ── main title ────────────────────────────────────────────────────────────────
 
 st.title("FSC — Fractal Singularity Cipher")
-st.caption("A multi-layer cryptographic proof-of-concept combining fractal geometry, "
-           "material physics, isotope decay, and Lorenz chaos.")
+st.caption("A 7-layer cryptographic proof-of-concept combining fractal geometry, "
+           "material physics, isotope decay, Lorenz chaos, and a One-Time Pad.")
 
 
 # ── input validation ──────────────────────────────────────────────────────────
@@ -107,7 +108,7 @@ if encrypt_btn:
         st.error("Message must be ≤ 30 characters.")
         st.stop()
 
-    with st.spinner(f"Running 6-layer pipeline on {len(msg)} characters…"):
+    with st.spinner(f"Running 7-layer pipeline on {len(msg)} characters…"):
         enc = _run_encrypt(msg.strip(), int(seed), int(canvas), int(planck))
     st.session_state["enc"] = enc
 
@@ -121,7 +122,7 @@ enc    = st.session_state["enc"]
 text   = enc["text"]
 key    = enc["key"]
 qp     = enc["quant_params"]
-cipher = enc["bh_out"]["cipher"]
+cipher = enc["otp_out"]
 t_ms   = enc["_t_ms"]
 
 
@@ -135,7 +136,7 @@ with st.spinner("Rendering layer visualization…"):
     visualize(enc, save_path=tmp.name)
 
 st.image(tmp.name, use_container_width=True,
-         caption=f"FSC encryption layers — text={text!r}  seed={key.master_seed}")
+         caption=f"FSC 7-layer encryption — text={text!r}")
 try:
     os.unlink(tmp.name)
 except OSError:
@@ -146,10 +147,11 @@ except OSError:
 # 2. Metrics
 # ─────────────────────────────────────────────────────────────────────────────
 
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 c1.metric("Encrypt time", f"{t_ms:.1f} ms")
 c2.metric("Entropy", f"{_entropy(cipher):.3f} / 8.000 bit")
 c3.metric("Ciphertext", f"{cipher.size:,} bytes")
+c4.metric("OTP pad", f"{key.otp_pad_kb:.1f} kB")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

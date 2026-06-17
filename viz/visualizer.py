@@ -10,10 +10,11 @@ Row layout (one column per character):
   3  Isotope     — after radioactive decay (further darkening)
   4  Fractal     — after IFS pixel permutation (scrambled)
   5  Quantizer   — Planck-discretized uint16 → displayed as grayscale
-  6  Blackhole   — Lorenz XOR ciphertext (should look like noise)
+  6  Blackhole   — Lorenz XOR ciphertext (uniform noise)
+  7  OTP         — One-Time Pad XOR (information-theoretic perfect secrecy)
 
 Rows 1–4 share the same vmax (renderer max) so progressive darkening
-across layers is visually apparent. Rows 5–6 use [0, 255].
+across layers is visually apparent. Rows 5–7 use [0, 255].
 """
 
 import numpy as np
@@ -35,7 +36,7 @@ def _row_label(ax, text: str, fontsize: int = 9):
 
 def visualize(enc_state: dict, save_path: str = "fsc_layers.png") -> str:
     """
-    Build and save the 6-row layer figure.
+    Build and save the 7-row layer figure.
 
     Parameters
     ----------
@@ -55,9 +56,10 @@ def visualize(enc_state: dict, save_path: str = "fsc_layers.png") -> str:
     arr_isotope   = enc_state["isotope_out"]["decayed"]
     arr_fractal   = enc_state["fractal_out"]["transformed"]
 
-    # integer layers (rows 5–6)
+    # integer layers (rows 5–7)
     arr_quantizer = enc_state["quant_out"]["quantized"].astype(np.float32)   # uint16 → float
     arr_blackhole = enc_state["bh_out"]["cipher"].astype(np.float32)         # uint8  → float
+    arr_otp       = enc_state["otp_out"].astype(np.float32)                  # uint8  → float
 
     # ── per-column vmax for float rows ───────────────────────────────────
     # Each column (character) is normalised to its own renderer max so the
@@ -86,7 +88,7 @@ def visualize(enc_state: dict, save_path: str = "fsc_layers.png") -> str:
         return f"φ={fp.phi_angle:.2f}  T={fp.n_transforms}"
 
     # ── figure layout ─────────────────────────────────────────────────────
-    N_ROWS   = 6
+    N_ROWS   = 7
     FIG_W    = max(8.0, n * 2.4 + 2.5)
     FIG_H    = N_ROWS * 2.2 + 0.8
     CMAP_F   = "gray"           # float layers
@@ -161,6 +163,10 @@ def visualize(enc_state: dict, save_path: str = "fsc_layers.png") -> str:
         (arr_blackhole, 255.0, CMAP_I,
          "6 · Blackhole\n    (Lorenz XOR)",
          lambda i: f"entropy≈8 bit"),
+
+        (arr_otp,       255.0, CMAP_I,
+         "7 · OTP\n    (perfect secrecy)",
+         lambda i: f"Shannon 1949"),
     ]
 
     # ── draw all cells ────────────────────────────────────────────────────
@@ -191,7 +197,7 @@ def visualize(enc_state: dict, save_path: str = "fsc_layers.png") -> str:
 
     # ── figure title ──────────────────────────────────────────────────────
     fig.suptitle(
-        f"FSC — Fractal Singularity Cipher  |  text={text!r}  seed={key.master_seed}",
+        f"FSC — Fractal Singularity Cipher  |  7-layer pipeline  |  text={text!r}",
         fontsize=10, color="#e8e8ff", fontfamily="monospace",
         y=0.975,
     )
@@ -210,7 +216,7 @@ if __name__ == "__main__":
     from core.pipeline import encrypt
 
     text = sys.argv[1] if len(sys.argv) > 1 else "FSC"
-    key  = generate(text, master_seed=42)
+    key  = generate(text)
     enc  = encrypt(text, key)
     out  = visualize(enc, "fsc_layers.png")
     print(f"Saved: {out}")

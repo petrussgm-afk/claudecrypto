@@ -1,6 +1,6 @@
 # FSC — Fractal Singularity Cipher
 
-**A multi-domain proof-of-concept cipher that encrypts text through six sequential physical transformations.**
+**A multi-domain proof-of-concept cipher that encrypts text through seven sequential physical transformations.**
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
@@ -10,7 +10,7 @@
 
 ## Overview
 
-FSC is a research-grade cryptographic proof-of-concept that encodes plaintext by passing it through six physically-motivated transformation layers: typographic rendering, X-ray material attenuation, radioactive isotope decay, iterated function system pixel permutation, Planck-scale quantization, and Lorenz chaotic stream XOR. Each layer draws on real physical equations — Beer-Lambert, nuclear decay kinetics, and the Lorenz attractor — to produce a ciphertext that visually resembles white noise and achieves near-ideal byte entropy. FSC is **not** production cryptography; it is an exploration of what encryption looks like when designed around the mathematical structure of physical phenomena rather than classical number theory.
+FSC is a research-grade cryptographic proof-of-concept that encodes plaintext by passing it through seven physically-motivated transformation layers: typographic rendering, X-ray material attenuation, radioactive isotope decay, iterated function system pixel permutation, Planck-scale quantization, Lorenz chaotic stream XOR, and a One-Time Pad. The first six layers draw on real physical equations — Beer-Lambert, nuclear decay kinetics, and the Lorenz attractor — to produce a ciphertext that visually resembles white noise and achieves near-ideal byte entropy. The final OTP layer provides Shannon information-theoretic perfect secrecy. FSC is **not** production cryptography; it is an exploration of what encryption looks like when designed around the mathematical structure of physical phenomena rather than classical number theory.
 
 ---
 
@@ -24,8 +24,9 @@ FSC is a research-grade cryptographic proof-of-concept that encodes plaintext by
 | 4 | **Fractal** | `core/fractal.py` | IFS pixel permutation weighted by golden ratio φ = 1.6180… |
 | 5 | **Quantizer** | `core/quantizer.py` | Uniform discretization to N Planck-pixel levels |
 | 6 | **Blackhole** | `core/blackhole.py` | Lorenz stream XOR — σ = 10, ρ = 28, β = 8/3, RK4 integration |
+| 7 | **OTP** | `core/otp.py` | XOR with truly random pad · Shannon 1949 · information-theoretic security |
 
-The encryption pipeline is fully invertible (layers 1–5 are exact or near-exact; layer 6 is self-inverse by XOR). Decryption applies the inverse of each layer in reverse order given the key.
+The encryption pipeline is fully invertible (layers 1–5 are exact or near-exact; layers 6–7 are self-inverse by XOR). Decryption applies the inverse of each layer in reverse order given the key.
 
 ```
 plaintext
@@ -36,6 +37,7 @@ plaintext
     ▼  [4] Fractal     pixel permutation via IFS orbit scores × φ^k
     ▼  [5] Quantizer   float → uint8 levels  [0, N−1]
     ▼  [6] Blackhole   XOR with Lorenz keystream from SHAKE256(lorenz_init ∥ nonce)
+    ▼  [7] OTP         XOR with pre-shared random pad  (n × H × W bytes)
     ▼  [auth]  HMAC-SHA256 prefix + random padding to 256-byte block boundary
     │
 ciphertext  (authenticated bytes, entropy ≈ 8.000 bit/byte)
@@ -52,6 +54,7 @@ ciphertext  (authenticated bytes, entropy ≈ 8.000 bit/byte)
 | Nonce divergence (same lorenz_init, different 128-bit nonce) | **99.5 % keystream divergence** |
 | Round-trip reconstruction error | **< 1 % of signal range** |
 | Encrypt time | **~100 ms / 3 chars @ 128×128 canvas** |
+| OTP pad (11 chars @ 128×128) | **180 KB** |
 
 ---
 
@@ -59,7 +62,7 @@ ciphertext  (authenticated bytes, entropy ≈ 8.000 bit/byte)
 
 ![FSC encryption layers](fsc_layers.png)
 
-Each column is one character. Left to right: the pixel structure of the rendered glyph survives X-ray attenuation and isotope decay (rows 1–3), is spatially destroyed by the IFS permutation (row 4), quantized (row 5), and finally XOR-masked into uniform noise (row 6).
+Each column is one character. Left to right: the pixel structure of the rendered glyph survives X-ray attenuation and isotope decay (rows 1–3), is spatially destroyed by the IFS permutation (row 4), quantized (row 5), XOR-masked by the Lorenz stream into uniform noise (row 6), and finally XOR-masked again by the OTP (row 7).
 
 ---
 
@@ -168,17 +171,20 @@ fsc-cipher/
 │   ├── fractal.py         # Layer 4 — IFS φ-weighted pixel permutation
 │   ├── quantizer.py       # Layer 5 — Planck-pixel uniform quantization
 │   ├── blackhole.py       # Layer 6 — Lorenz RK4 stream XOR
-│   └── pipeline.py        # Orchestrates all 6 layers, encrypt + decrypt
+│   ├── otp.py             # Layer 7 — One-Time Pad (Shannon perfect secrecy)
+│   └── pipeline.py        # Orchestrates all 7 layers, encrypt + decrypt
 ├── keys/
 │   └── keygen.py          # FSCKey / CharKey generation from master seed
 ├── viz/
-│   └── visualizer.py      # Matplotlib 6-row layer figure → PNG
+│   └── visualizer.py      # Matplotlib 7-row layer figure → PNG
 ├── demo/
 │   └── app.py             # Streamlit interactive demo
+├── docs/
+│   └── FSC_paper.md       # Academic paper (arXiv cs.CR style)
 ├── tests/
-│   ├── test_pipeline.py   # 6-layer round-trip test with per-layer error budget
+│   ├── test_pipeline.py   # 7-layer round-trip test with per-layer error budget
 │   └── test_app_logic.py  # Dry-run of demo helpers without Streamlit runtime
-├── fsc_layers.png         # Example visualization (text="FSC", seed=42)
+├── fsc_layers.png         # Example visualization (text="FSC", 7 layers)
 ├── requirements.txt
 └── README.md
 ```
