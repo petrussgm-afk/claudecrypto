@@ -6,7 +6,10 @@ __pycache__/
 .Python
 *.egg-info/
 dist/
-build/
+# PyInstaller intermediates inside build/, but keep the build scripts.
+build/_work/
+build/FSC.spec
+build/*.spec
 .eggs/
 
 # Virtual environments

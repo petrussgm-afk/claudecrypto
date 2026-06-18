@@ -34,7 +34,8 @@ def _row_label(ax, text: str, fontsize: int = 9):
     ax.yaxis.set_label_coords(-0.08, 0.5)
 
 
-def visualize(enc_state: dict, save_path: str = "fsc_layers.png") -> str:
+def visualize(enc_state: dict, save_path: str = "fsc_layers.png",
+              max_cols: int = None) -> str:
     """
     Build and save the 7-row layer figure.
 
@@ -44,22 +45,25 @@ def visualize(enc_state: dict, save_path: str = "fsc_layers.png") -> str:
         Output of core.pipeline.encrypt().
     save_path : str
         Destination file.  Returns the path on success.
+    max_cols : int, optional
+        If set and less than n_chars, only the first max_cols characters are
+        rendered (figure stays readable for long messages). The full ciphertext
+        in enc_state is unaffected — this is display-only.
     """
     text   = enc_state["text"]
-    n      = len(text)
+    n_full = len(text)
+    n      = n_full if (max_cols is None or max_cols >= n_full) else int(max_cols)
+    truncated = n < n_full
     key    = enc_state["key"]
 
-    # ── collect per-layer arrays ──────────────────────────────────────────
-    # float layers (rows 1–4): shape (n, H, W)
-    arr_renderer  = enc_state["geometry"]
-    arr_material  = enc_state["material_out"]["attenuated"]
-    arr_isotope   = enc_state["isotope_out"]["decayed"]
-    arr_fractal   = enc_state["fractal_out"]["transformed"]
-
-    # integer layers (rows 5–7)
-    arr_quantizer = enc_state["quant_out"]["quantized"].astype(np.float32)   # uint16 → float
-    arr_blackhole = enc_state["bh_out"]["cipher"].astype(np.float32)         # uint8  → float
-    arr_otp       = enc_state["otp_out"].astype(np.float32)                  # uint8  → float
+    # ── collect per-layer arrays (sliced to first n columns if truncated) ──
+    arr_renderer  = enc_state["geometry"][:n]
+    arr_material  = enc_state["material_out"]["attenuated"][:n]
+    arr_isotope   = enc_state["isotope_out"]["decayed"][:n]
+    arr_fractal   = enc_state["fractal_out"]["transformed"][:n]
+    arr_quantizer = enc_state["quant_out"]["quantized"][:n].astype(np.float32)
+    arr_blackhole = enc_state["bh_out"]["cipher"][:n].astype(np.float32)
+    arr_otp       = enc_state["otp_out"][:n].astype(np.float32)
 
     # ── per-column vmax for float rows ───────────────────────────────────
     # Each column (character) is normalised to its own renderer max so the
@@ -196,8 +200,10 @@ def visualize(enc_state: dict, save_path: str = "fsc_layers.png") -> str:
         cb.outline.set_edgecolor("#444455")
 
     # ── figure title ──────────────────────────────────────────────────────
+    title_extra = f"  |  showing {n}/{n_full} chars" if truncated else ""
     fig.suptitle(
-        f"FSC — Fractal Singularity Cipher  |  7-layer pipeline  |  text={text!r}",
+        f"FSC — Fractal Singularity Cipher  |  7-layer pipeline  |  "
+        f"text={text[:n]!r}{title_extra}",
         fontsize=10, color="#e8e8ff", fontfamily="monospace",
         y=0.975,
     )

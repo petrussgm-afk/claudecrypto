@@ -14,11 +14,17 @@ import numpy as np
 from dataclasses import dataclass
 import time
 
-# Knižnica izotopov: (polčas rozpadu v sekundách)
-ISOTOPES: dict[str, float] = {
-    "Po-214":    1.64e-4,       # 164 µs — takmer okamžitý zánik
-    "Ra-224":    3.14e5,        # 3.6 dňa
-    "I-131":     6.93e5,        # 8 dní
+# Knižnica izotopov rozdelená podľa použiteľnosti pre šifrovanie.
+#
+# STABLE  — half_life ≥ 1 rok. Správy zostávajú dešifrovateľné neobmedzene,
+#           izotopová vrstva pridáva fyzikálnu hlbku bez praktického časového
+#           okna pre rozpad. Toto je default pre normálne správy.
+#
+# EPHEMERAL — krátko žijúce izotopy (µs až dni). Šifrovaná správa sa po
+#             niekoľkých polčasoch stane nedešifrovateľnou — funkcia
+#             "sebazničujúce správy", v duchu Hawkingovho žiarenia.
+
+ISOTOPES_STABLE: dict[str, float] = {
     "Co-60":     1.66e8,        # 5.27 roka
     "Cs-137":    9.46e8,        # 30 rokov
     "Ra-226":    5.06e10,       # 1600 rokov
@@ -28,7 +34,38 @@ ISOTOPES: dict[str, float] = {
     "Bi-209":    5.98e26,       # prakticky stabilný
 }
 
-ISOTOPE_NAMES = list(ISOTOPES.keys())
+ISOTOPES_EPHEMERAL: dict[str, float] = {
+    "Po-214":    1.64e-4,       # 164 µs — takmer okamžitý zánik
+    "Ra-224":    3.14e5,        # 3.6 dňa
+    "I-131":     6.93e5,        # 8 dní
+}
+
+# Spojený slovník — zachované pre spätnú kompatibilitu so starým API
+# (test_pipeline.py a podobne sa nemusia meniť).
+ISOTOPES: dict[str, float] = {**ISOTOPES_EPHEMERAL, **ISOTOPES_STABLE}
+
+ISOTOPE_NAMES           = list(ISOTOPES.keys())
+ISOTOPE_NAMES_STABLE    = list(ISOTOPES_STABLE.keys())
+ISOTOPE_NAMES_EPHEMERAL = list(ISOTOPES_EPHEMERAL.keys())
+
+VALID_MODES = ("stable", "ephemeral")
+
+
+class IsotopeExpiredError(ValueError):
+    """Raised when reverse_decay can no longer recover the signal — the
+    encoded character has effectively decayed beyond reconstruction.
+    Subclass of ValueError so existing `except ValueError:` handlers still
+    catch it, but the app layer can distinguish 'expired' from real errors.
+    """
+    def __init__(self, isotope: str, half_life: float, delta_t: float, n_halflives: float):
+        self.isotope     = isotope
+        self.half_life   = half_life
+        self.delta_t     = delta_t
+        self.n_halflives = n_halflives
+        super().__init__(
+            f"Izotop {isotope} sa rozpadol — informácia je nedešifrovateľná. "
+            f"Prešlo {delta_t:.3g}s ({n_halflives:.1f}× polčas={half_life:.2e}s)."
+        )
 
 
 @dataclass
@@ -40,14 +77,30 @@ class IsotopeParams:
     n0: float           # počiatočná "intenzita" (normalizovaná)
 
 
-def assign_isotope(char_index: int, seed: int, t_encrypt: float = None) -> IsotopeParams:
+def assign_isotope(
+    char_index: int,
+    seed: int,
+    t_encrypt: float = None,
+    mode: str = "stable",
+) -> IsotopeParams:
     """
     Každému znaku priradí deterministický izotop.
-    t_encrypt: unix timestamp šifrovania (default = teraz)
+
+    mode      — "stable" (default) volí z dlho-žijúcich izotopov, správa
+                zostáva dešifrovateľná neobmedzene.
+              — "ephemeral" volí z krátko-žijúcich, správa sa po niekoľkých
+                polčasoch znehodnotí — sebazničujúca správa.
+    t_encrypt — unix timestamp momentu šifrovania (default = teraz).
     """
+    if mode not in VALID_MODES:
+        raise ValueError(f"isotope mode must be one of {VALID_MODES}, got {mode!r}")
+
+    pool_names = ISOTOPE_NAMES_STABLE if mode == "stable" else ISOTOPE_NAMES_EPHEMERAL
+    pool_dict  = ISOTOPES_STABLE      if mode == "stable" else ISOTOPES_EPHEMERAL
+
     rng = np.random.default_rng(seed)
-    isotope = rng.choice(ISOTOPE_NAMES)
-    half_life = ISOTOPES[isotope]
+    isotope = rng.choice(pool_names)
+    half_life = pool_dict[isotope]
     lambda_decay = np.log(2) / half_life
     n0 = float(rng.uniform(0.8, 1.0))
     t = t_encrypt if t_encrypt is not None else time.time()
@@ -84,9 +137,11 @@ def reverse_decay(decayed: np.ndarray, params: IsotopeParams, t_decrypt: float =
     decay_factor = params.n0 * np.exp(-params.lambda_decay * delta_t)
 
     if decay_factor < 1e-15:
-        raise ValueError(
-            f"Izotop {params.isotope} sa rozpadol — informácia je nedešifrovateľná. "
-            f"Prešlo {delta_t:.2f}s, polčas={params.half_life:.2e}s"
+        raise IsotopeExpiredError(
+            isotope=params.isotope,
+            half_life=params.half_life,
+            delta_t=delta_t,
+            n_halflives=(delta_t / params.half_life) if params.half_life > 0 else float('inf'),
         )
     return decayed / decay_factor
 

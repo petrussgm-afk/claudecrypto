@@ -32,6 +32,7 @@ class FSCKey:
     t_encrypt: float        # unix timestamp
     chars: list             # list of CharKey
     otp_pad: bytes          # Layer 7 — One-Time Pad (n_chars × canvas² bytes)
+    isotope_mode: str = "stable"   # "stable" or "ephemeral" (Layer 3 pool)
 
     @property
     def key_hex(self) -> str:
@@ -57,13 +58,18 @@ def generate(
     master_key: Optional[Union[bytes, int]] = None,
     canvas_size: int = 128,
     planck_resolution: int = 256,
+    isotope_mode: str = "stable",
     master_seed: Optional[int] = None,  # deprecated alias, kept for backward compat
 ) -> FSCKey:
     """
     Vygeneruje úplný kľúč pre dané vstupné slovo.
 
-    master_key: 32 raw bytes, int (converted to 4-byte padded key), or None → secrets.token_bytes(32).
+    master_key:   32 raw bytes, int (4-byte padded), or None → secrets.token_bytes(32).
+    isotope_mode: "stable"     — long-lived isotopes, message always decryptable
+                  "ephemeral"  — short-lived, message self-destructs after a few halflives
     """
+    if isotope_mode not in ("stable", "ephemeral"):
+        raise ValueError(f"isotope_mode must be 'stable' or 'ephemeral', got {isotope_mode!r}")
     # backward compat: master_seed kwarg maps to master_key
     if master_key is None and master_seed is not None:
         master_key = master_seed
@@ -103,4 +109,5 @@ def generate(
         t_encrypt=time.time(),
         chars=chars,
         otp_pad=otp_pad,
+        isotope_mode=isotope_mode,
     )

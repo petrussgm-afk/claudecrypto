@@ -1,0 +1,1 @@
+"""FSC desktop application package."""

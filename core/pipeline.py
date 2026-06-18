@@ -89,8 +89,11 @@ def encrypt(text: str, key: FSCKey) -> dict:
     material_out = material.encrypt(geometry, material_params)
 
     # ── Vrstva 3: Isotope ─────────────────────────────────────────────────
+    # mode chosen by the key (stable for normal messages, ephemeral for
+    # self-destructing). Default "stable" if key dataclass lacks the field.
+    iso_mode = getattr(key, "isotope_mode", "stable")
     isotope_params = [
-        isotope.assign_isotope(i, key.chars[i].isotope_seed, key.t_encrypt)
+        isotope.assign_isotope(i, key.chars[i].isotope_seed, key.t_encrypt, mode=iso_mode)
         for i in range(n)
     ]
     isotope_out = isotope.encrypt(material_out["attenuated"], isotope_params)
