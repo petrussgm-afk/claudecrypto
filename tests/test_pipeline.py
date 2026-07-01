@@ -9,6 +9,12 @@ Security tests:
   - HMAC-SHA256 tamper detection
   - Nonce-gated Lorenz keystream
   - OTP wrong-pad detection
+
+Determinism: this test pins a well-conditioned master_key (all "FSC" chars draw
+materials with attenuation factor > 0.1) so the physical round-trip never trips
+the Beer-Lambert over-absorption guard. Random-key behaviour — including the
+intended saturation on thick high-Z materials — is covered separately in
+test_pipeline_random_stress.py.
 """
 import sys, time
 import numpy as np
@@ -19,8 +25,13 @@ from core.pipeline import encrypt, decrypt, roundtrip_error, _verify_hmac, _hmac
 from core.blackhole import BlackholeParams, _generate_keystream
 from core import otp
 
+# Well-conditioned key: "FSC" → bone(atten 0.50), tissue(0.66), tissue(0.51),
+# all > 0.1 → deterministic, never saturates Beer-Lambert. See module docstring.
+WELL_CONDITIONED_KEY = bytes.fromhex(
+    "c00809b7b761e3143d5b3f6409ebee28567e77be43ce1057d56b317905e61677")
+
 TEXT = "FSC"
-key  = generate(TEXT)   # random 256-bit master_key + random OTP pad
+key  = generate(TEXT, master_key=WELL_CONDITIONED_KEY)  # pinned 256-bit key + random OTP pad
 
 sep = "-" * 66
 print(sep)

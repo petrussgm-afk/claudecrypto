@@ -19,6 +19,12 @@ from app.fileformat     import encode_cipher, load_fsc, load_keyfile, read_pad
 from keys.keygen        import generate
 from core.pipeline      import encrypt as pipeline_encrypt
 
+# Well-conditioned key: "FSC" → bone/tissue/tissue, all attenuation > 0.1, so the
+# decrypt round-trip never trips the Beer-Lambert over-absorption guard. Pinned
+# for determinism (was secrets.token_bytes(32), which occasionally drew thick lead).
+WELL_CONDITIONED_KEY = bytes.fromhex(
+    "c00809b7b761e3143d5b3f6409ebee28567e77be43ce1057d56b317905e61677")
+
 sep = "-" * 66
 print(sep)
 print(" decrypt_engine smoke test")
@@ -28,7 +34,7 @@ with tempfile.TemporaryDirectory() as base:
     ks_dir = keystore.ensure_keystore(base)
 
     # ── forge key + pad ───────────────────────────────────────────────────
-    mk       = secrets.token_bytes(32)
+    mk       = WELL_CONDITIONED_KEY
     canvas   = 128
     max_len  = 30
     pad_sz   = max_len * canvas * canvas

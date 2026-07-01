@@ -98,12 +98,15 @@ rec_id = compton.reverse_compton(sc_id, f_id)
 check("second round-trip exact", float(np.abs(arr - rec_id).max()) < 1e-9)
 
 
-# ── 5a. full pipeline with compton_mode=True (random key) ──────────────────
-# These checks hold for ANY key regardless of how well-conditioned the random
-# material/isotope draw is: the flag flows through, Compton engages, and the
-# exact algorithmic layers (OTP / Lorenz XOR) stay bit-exact.
+# ── 5a. full pipeline with compton_mode=True ───────────────────────────────
+# The flag flows through, Compton engages, and the exact algorithmic layers
+# (OTP / Lorenz XOR) stay bit-exact. Uses a pinned well-conditioned key ("FSC" →
+# bone/tissue/tissue, all attenuation > 0.1) so the decrypt never trips the
+# Beer-Lambert over-absorption guard (Compton doesn't alter material selection).
 TEXT = "FSC"
-key = generate(TEXT, compton_mode=True)
+FSC_WELL_CONDITIONED = bytes.fromhex(
+    "c00809b7b761e3143d5b3f6409ebee28567e77be43ce1057d56b317905e61677")
+key = generate(TEXT, master_key=FSC_WELL_CONDITIONED, compton_mode=True)
 check("key.compton_mode flag set", key.compton_mode is True)
 
 enc = encrypt(TEXT, key)

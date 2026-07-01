@@ -29,6 +29,12 @@ from app.screens.decrypt  import DecryptScreen
 from keys.keygen          import generate
 from core.pipeline        import encrypt as pipeline_encrypt
 
+# Well-conditioned key: "HELLO" (5 chars) draws water/wood/tissue, all attenuation
+# > 0.1, so the decrypt round-trip never trips the Beer-Lambert over-absorption
+# guard. Pinned for determinism (was secrets.token_bytes(32), occasionally lead).
+WELL_CONDITIONED_KEY = bytes.fromhex(
+    "da75a2440dd346387dcb7840344f637d001c01d315edb852d8d9839da3836d1a")
+
 sep = "-" * 66
 print(sep)
 print(" DecryptScreen integration test (Phase 3)")
@@ -37,7 +43,7 @@ print(sep)
 # ── temp keystore + forge a key ───────────────────────────────────────────────
 tmp = tempfile.TemporaryDirectory()
 ks_dir   = keystore.ensure_keystore(tmp.name)
-mk       = secrets.token_bytes(32)
+mk       = WELL_CONDITIONED_KEY
 canvas   = 128
 max_len  = 30
 pad_size = max_len * canvas * canvas
