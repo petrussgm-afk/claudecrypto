@@ -35,6 +35,7 @@ class FSCKey:
     isotope_mode: str = "stable"   # "stable" or "ephemeral" (Layer 3 pool)
     compton_mode: bool = False     # Layer 2 — deterministic Compton scatter sub-layer
     ultrasound_mode: bool = False  # Layer 2 — ultrasound frequency-dependent attenuation sub-layer
+    scramble_mode: bool = False    # Layer 6b — integer-reversible SPN scramble (diffusion, before Lorenz XOR)
 
     @property
     def key_hex(self) -> str:
@@ -63,6 +64,7 @@ def generate(
     isotope_mode: str = "stable",
     compton_mode: bool = False,
     ultrasound_mode: bool = False,
+    scramble_mode: bool = False,
     master_seed: Optional[int] = None,  # deprecated alias, kept for backward compat
 ) -> FSCKey:
     """
@@ -79,6 +81,10 @@ def generate(
                                     sub-layer in Layer 2. Per-char frequency (2–15 MHz) is
                                     derived from each char's material_seed; α = a·f^b is
                                     deterministic, so the sub-layer is exactly invertible.
+    scramble_mode:   True         — enable the optional integer-reversible SPN scramble
+                                    (Layer 6b) that runs after the quantizer and before the
+                                    Lorenz XOR. Adds global diffusion + defense-in-depth
+                                    against OTP pad reuse; byte-exact, no expansion.
     """
     if isotope_mode not in ("stable", "ephemeral"):
         raise ValueError(f"isotope_mode must be 'stable' or 'ephemeral', got {isotope_mode!r}")
@@ -124,4 +130,5 @@ def generate(
         isotope_mode=isotope_mode,
         compton_mode=compton_mode,
         ultrasound_mode=ultrasound_mode,
+        scramble_mode=scramble_mode,
     )

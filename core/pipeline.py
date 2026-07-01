@@ -14,7 +14,7 @@ import struct
 import time
 import numpy as np
 
-from core import renderer, material, isotope, fractal, quantizer, blackhole, otp
+from core import renderer, material, isotope, fractal, quantizer, blackhole, otp, scramble
 from core.blackhole import BlackholeParams
 from keys.keygen import FSCKey
 
@@ -112,9 +112,15 @@ def encrypt(text: str, key: FSCKey) -> dict:
     # ── Vrstva 5: Quantizer ───────────────────────────────────────────────
     quant_out = quantizer.encrypt(fractal_out["transformed"], key.planck_resolution)
 
-    # ── Vrstva 6: Blackhole ───────────────────────────────────────────────
+    # ── Vrstva 6: Blackhole (+ voliteľná 6b: scramble PRED Lorenz XOR) ────
     bh_params = BlackholeParams(lorenz_init=key.lorenz_init)
-    bh_out    = blackhole.encrypt(quant_out["quantized"], bh_params)
+    scramble_mode = getattr(key, "scramble_mode", False)
+    if scramble_mode:
+        # diffusion PRED Lorenz XOR; rovnaký nonce ako Lorenz (message-unique)
+        bh_input = scramble.scramble(quant_out["quantized"], key.master_key, bh_params.nonce)
+    else:
+        bh_input = quant_out["quantized"]
+    bh_out = blackhole.encrypt(bh_input, bh_params)
 
     # ── Vrstva 7: OTP ────────────────────────────────────────────────────
     otp_out = otp.encrypt(bh_out["cipher"], key.otp_pad)
@@ -128,6 +134,8 @@ def encrypt(text: str, key: FSCKey) -> dict:
         "isotope_out":     isotope_out,
         "fractal_out":     fractal_out,
         "quant_out":       quant_out,
+        "bh_input":        bh_input,
+        "scramble_mode":   scramble_mode,
         "bh_out":          bh_out,
         "otp_out":         otp_out,
         "auth_cipher":     auth_cipher,
@@ -159,9 +167,16 @@ def decrypt(enc_state: dict, t_decrypt: float = None) -> dict:
     bh_for_decrypt = {**enc_state["bh_out"], "cipher": after_otp.astype(np.uint8)}
     after_bh = blackhole.decrypt(bh_for_decrypt)
 
+    # ── Reverzia 6b: Scramble (ak bol zapnutý) — PRED dequantizerom ────────
+    if enc_state.get("scramble_mode", False):
+        nonce = enc_state["bh_out"]["params"].nonce
+        after_unscramble = scramble.unscramble(after_bh, enc_state["key"].master_key, nonce)
+    else:
+        after_unscramble = after_bh
+
     # ── Reverzia 5: Quantizer ─────────────────────────────────────────────
     after_quant = quantizer.decrypt({
-        "quantized": after_bh,
+        "quantized": after_unscramble,
         "params":    enc_state["quant_params"],
     })
 
@@ -194,6 +209,7 @@ def decrypt(enc_state: dict, t_decrypt: float = None) -> dict:
     return {
         "after_otp":      after_otp,
         "after_bh":       after_bh,
+        "after_unscramble": after_unscramble,
         "after_quant":    after_quant,
         "after_fractal":  after_fractal,
         "after_isotope":  after_isotope,
@@ -209,7 +225,7 @@ def roundtrip_error(enc_state: dict, dec_state: dict) -> dict:
     Každá decryptovaná vrstva vs. jej správna referencia z encryption state.
 
       after_otp      == bh_out["cipher"]                (presné — OTP XOR)
-      after_bh       == quant_out["quantized"]          (presné — Lorenz XOR)
+      after_bh       == bh_input                        (presné — Lorenz XOR; scrambled ak scramble_mode)
       after_quant    ≈  fractal_out["transformed"]      (kvantz. chyba ≤ step/2)
       after_fractal  ≈  isotope_out["decayed"]          (presné — permutácia)
       after_isotope  ≈  material_out["attenuated"]      (amplifikovaná kvantz. ch.)
@@ -218,7 +234,7 @@ def roundtrip_error(enc_state: dict, dec_state: dict) -> dict:
     """
     refs = {
         "after_otp":      enc_state["bh_out"]["cipher"].astype(np.uint8),
-        "after_bh":       enc_state["quant_out"]["quantized"].astype(np.uint16),
+        "after_bh":       enc_state.get("bh_input", enc_state["quant_out"]["quantized"]).astype(np.uint16),
         "after_quant":    enc_state["fractal_out"]["transformed"],
         "after_fractal":  enc_state["isotope_out"]["decayed"],
         "after_isotope":  enc_state["material_out"]["attenuated"],
