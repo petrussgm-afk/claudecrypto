@@ -2,4 +2,13 @@ numpy>=1.26.0
 scipy>=1.11.0
 matplotlib>=3.8.0
 Pillow>=10.0.0
+markdown>=3.5
+
+# desktop app
+PySide6>=6.6.0
+
+# optional: legacy Streamlit demo (demo/app.py)
 streamlit>=1.28.0
+
+# build only (Windows .exe via build/build_windows.py)
+# pyinstaller>=6.0
