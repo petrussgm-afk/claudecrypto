@@ -82,10 +82,12 @@ def encrypt(text: str, key: FSCKey) -> dict:
     geometry = np.stack([renderer.render_char(p, cs) for p in renderer_params])
 
     # ── Vrstva 2: Material ────────────────────────────────────────────────
-    # compton_mode (Comptonov rozptyl) volí kľúč; default False ak dataclass pole chýba.
+    # compton_mode / ultrasound_mode volí kľúč; default False ak dataclass polia chýbajú.
     compton_mode = getattr(key, "compton_mode", False)
+    ultrasound_mode = getattr(key, "ultrasound_mode", False)
     material_params = [
-        material.assign_material(i, key.chars[i].material_seed, compton=compton_mode)
+        material.assign_material(i, key.chars[i].material_seed,
+                                 compton=compton_mode, ultrasound=ultrasound_mode)
         for i in range(n)
     ]
     material_out = material.encrypt(geometry, material_params)

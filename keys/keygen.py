@@ -34,6 +34,7 @@ class FSCKey:
     otp_pad: bytes          # Layer 7 — One-Time Pad (n_chars × canvas² bytes)
     isotope_mode: str = "stable"   # "stable" or "ephemeral" (Layer 3 pool)
     compton_mode: bool = False     # Layer 2 — deterministic Compton scatter sub-layer
+    ultrasound_mode: bool = False  # Layer 2 — ultrasound frequency-dependent attenuation sub-layer
 
     @property
     def key_hex(self) -> str:
@@ -61,18 +62,23 @@ def generate(
     planck_resolution: int = 256,
     isotope_mode: str = "stable",
     compton_mode: bool = False,
+    ultrasound_mode: bool = False,
     master_seed: Optional[int] = None,  # deprecated alias, kept for backward compat
 ) -> FSCKey:
     """
     Vygeneruje úplný kľúč pre dané vstupné slovo.
 
-    master_key:   32 raw bytes, int (4-byte padded), or None → secrets.token_bytes(32).
-    isotope_mode: "stable"     — long-lived isotopes, message always decryptable
-                  "ephemeral"  — short-lived, message self-destructs after a few halflives
-    compton_mode: True         — enable the deterministic Compton scatter sub-layer in
-                                 Layer 2. Per-char photon energy (40–120 keV) and scatter
-                                 angle are derived from each char's material_seed, so the
-                                 refinement stays fully reversible.
+    master_key:      32 raw bytes, int (4-byte padded), or None → secrets.token_bytes(32).
+    isotope_mode:    "stable"     — long-lived isotopes, message always decryptable
+                     "ephemeral"  — short-lived, message self-destructs after a few halflives
+    compton_mode:    True         — enable the deterministic Compton scatter sub-layer in
+                                    Layer 2. Per-char photon energy (40–120 keV) and scatter
+                                    angle are derived from each char's material_seed, so the
+                                    refinement stays fully reversible.
+    ultrasound_mode: True         — enable the ultrasound frequency-dependent attenuation
+                                    sub-layer in Layer 2. Per-char frequency (2–15 MHz) is
+                                    derived from each char's material_seed; α = a·f^b is
+                                    deterministic, so the sub-layer is exactly invertible.
     """
     if isotope_mode not in ("stable", "ephemeral"):
         raise ValueError(f"isotope_mode must be 'stable' or 'ephemeral', got {isotope_mode!r}")
@@ -117,4 +123,5 @@ def generate(
         otp_pad=otp_pad,
         isotope_mode=isotope_mode,
         compton_mode=compton_mode,
+        ultrasound_mode=ultrasound_mode,
     )

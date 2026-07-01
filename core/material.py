@@ -15,6 +15,7 @@ import numpy as np
 from dataclasses import dataclass
 
 from core import compton as _compton
+from core import ultrasound as _ultrasound
 
 # Zjednodušená tabuľka koeficientov útlmu pri 80 keV [1/cm]
 # Zdroj: NIST XCOM (aproximácia)
@@ -45,6 +46,21 @@ MATERIAL_Z: dict[str, float] = {
     "air":       7.6,
 }
 
+# Mapovanie röntgenových materiálov na akustický materiál (pre ultrazvuk).
+# Akustická tabuľka nemá "air" — mapujeme na water ako neutrálny fallback.
+MATERIAL_ACOUSTIC: dict[str, str] = {
+    "water":     "water",
+    "bone":      "bone",
+    "aluminum":  "metal",
+    "iron":      "metal",
+    "lead":      "metal",
+    "glass":     "metal",
+    "rubber":    "fat",
+    "wood":      "muscle",
+    "tissue":    "tissue",
+    "air":       "water",
+}
+
 MATERIALS = list(MATERIAL_MU.keys())
 
 
@@ -58,16 +74,25 @@ class MaterialParams:
     compton_enabled: bool = False    # zapnutá Comptonova pod-vrstva?
     photon_energy_keV: float = 80.0  # energia fotónu [keV]
     scatter_angle: float = 0.0       # deterministický Comptonov uhol θ [rad]
-    scatter_factor: float = 1.0      # výsledný škálovací faktor ∈ (0, 1]
+    scatter_factor: float = 1.0      # výsledný Comptonov faktor ∈ (0, 1]
+    ultrasound_enabled: bool = False # zapnutá ultrazvuková pod-vrstva?
+    acoustic_material: str = "water" # akustický materiál (z ACOUSTIC tabuľky)
+    us_freq_mhz: float = 5.0         # frekvencia ultrazvuku [MHz]
+    us_factor: float = 1.0           # ultrazvukový útlmový faktor ∈ (0, 1]
 
 
-def assign_material(char_index: int, seed: int, compton: bool = False) -> MaterialParams:
+def assign_material(char_index: int, seed: int, compton: bool = False,
+                    ultrasound: bool = False) -> MaterialParams:
     """
     Každému znaku (indexu) priradí deterministický materiál a hrúbku.
 
     compton=True zapne Comptonovu pod-vrstvu: odvodí per-znak energiu fotónu
     (40–120 keV) a deterministický rozptylový uhol θ z toho istého material_seedu,
     a predpočíta škálovací faktor pre exaktnú reverziu.
+
+    ultrasound=True zapne ultrazvukovú pod-vrstvu: odvodí per-znak frekvenciu
+    (2–15 MHz) z material_seedu a predpočíta útlmový faktor exp(−2·α·x),
+    α = a·f^b (deterministický, exaktne reverzibilný).
     """
     rng = np.random.default_rng(seed)
     material = rng.choice(MATERIALS)
@@ -78,6 +103,8 @@ def assign_material(char_index: int, seed: int, compton: bool = False) -> Materi
     params = MaterialParams(
         material=material, thickness=thickness, mu=mu,
         Z=Z, seed=int(seed), compton_enabled=bool(compton),
+        ultrasound_enabled=bool(ultrasound),
+        acoustic_material=MATERIAL_ACOUSTIC[material],
     )
 
     if compton:
@@ -86,6 +113,13 @@ def assign_material(char_index: int, seed: int, compton: bool = False) -> Materi
         theta = _compton.derive_scatter_angle(seed, params.photon_energy_keV)
         params.scatter_angle = theta
         params.scatter_factor = _compton.scatter_factor(Z, params.photon_energy_keV, theta)
+
+    if ultrasound:
+        # per-znak frekvencia z material_seedu (po Comptone, aby draw-poradie ostalo stabilné)
+        params.us_freq_mhz = float(rng.uniform(2.0, 15.0))
+        params.us_factor = _ultrasound.ultrasound_factor(
+            params.acoustic_material, params.us_freq_mhz, thickness, seed
+        )
 
     return params
 
@@ -96,8 +130,8 @@ def apply_attenuation(geometry: np.ndarray, params: MaterialParams) -> np.ndarra
 
     I_out = I_in * exp(-mu * thickness)
 
-    Ak je zapnutý Compton, po Beer-Lambertovi sa aplikuje deterministický
-    Comptonov rozptyl (seed z material_seedu).
+    Poradie pri zapnutých pod-vrstvách:
+        Beer-Lambert → Compton → ultrazvuk
 
     geometry: 2D array [H x W], hodnoty 0.0–1.0 (intenzita vstupného žiarenia)
     Výstup:   2D array rovnakého tvaru — zmenšená intenzita po prechode materiálom
@@ -108,6 +142,10 @@ def apply_attenuation(geometry: np.ndarray, params: MaterialParams) -> np.ndarra
         out, _theta, _factor = _compton.apply_compton(
             out, params.Z, params.photon_energy_keV, params.seed
         )
+    if params.ultrasound_enabled:
+        out, _us = _ultrasound.apply_ultrasound(
+            out, params.acoustic_material, params.us_freq_mhz, params.thickness, params.seed
+        )
     return out
 
 
@@ -115,10 +153,14 @@ def reverse_attenuation(attenuated: np.ndarray, params: MaterialParams) -> np.nd
     """
     Inverzná materiálová transformácia — dešifrovanie.
 
-    Poradie je opačné voči apply_attenuation:
-      1. reverzia Comptonu (delenie škálovacím faktorom) — ak bol zapnutý
-      2. inverzný Beer-Lambert:  I_in = I_out / exp(-mu * thickness)
+    Poradie je presne opačné voči apply_attenuation:
+      1. reverzia ultrazvuku (delenie us_factor)     — ak bol zapnutý
+      2. reverzia Comptonu (delenie scatter_factor)  — ak bol zapnutý
+      3. inverzný Beer-Lambert:  I_in = I_out / exp(-mu * thickness)
     """
+    if params.ultrasound_enabled:
+        attenuated = _ultrasound.reverse_ultrasound(attenuated, params.us_factor)
+
     if params.compton_enabled:
         attenuated = _compton.reverse_compton(attenuated, params.scatter_factor)
 
